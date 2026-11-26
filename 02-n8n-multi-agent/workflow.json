@@ -1,0 +1,718 @@
+{
+  "name": "GitHub AI 트렌드 조사 보고서 (멀티 에이전트)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "afbb5c11-ae4c-4035-a9a2-92e70262642d",
+      "name": "실행 버튼",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.github.com/search/repositories",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "=topic:artificial-intelligence archived:false created:>={{ $now.minus({ days: 7 }).toFormat(\"yyyy-MM-dd\") }}"
+            },
+            {
+              "name": "sort",
+              "value": "stars"
+            },
+            {
+              "name": "order",
+              "value": "desc"
+            },
+            {
+              "name": "per_page",
+              "value": "5"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6b403719-2da8-427c-8e38-0caddb7dcfb3",
+      "name": "GitHub AI 저장소 검색",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        272,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = [];\nfor (const it of $input.all()) {\n  const body = it.json || {};\n  if (Array.isArray(body.items)) { for (const r of body.items) items.push(r); }\n  else if (body.full_name) { items.push(body); }\n}\nif (items.length === 0) {\n  throw new Error('GitHub 검색 결과가 0건입니다. 최근 7일 내 조건에 맞는 AI 저장소를 찾지 못했거나 API 응답 형식이 예상과 다릅니다.');\n}\nconst repos = items.slice(0, 5).map(function (r) {\n  return {\n    name: r.full_name || '미확인',\n    url: r.html_url || '미확인',\n    description: r.description || '미확인',\n    stars: typeof r.stargazers_count === 'number' ? r.stargazers_count : '미확인',\n    license: r.license && r.license.spdx_id && r.license.spdx_id !== 'NOASSERTION' ? r.license.spdx_id : '미확인',\n    language: r.language || '미확인',\n    created_at: r.created_at || '미확인',\n    topics: Array.isArray(r.topics) ? r.topics : []\n  };\n});\nreturn [{ json: { repo_count: repos.length, repos: repos, repos_text: JSON.stringify(repos, null, 2) } }];"
+      },
+      "id": "faed0b0a-d62a-477c-a15e-79aa3f836891",
+      "name": "저장소 정보 정리",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=아래는 최근 7일간 GitHub에 생성된 artificial-intelligence 토픽 저장소 목록(최대 5개)입니다(JSON).\n\n{{ $json.repos_text }}\n\n이 중 개발자가 실제로 사용해볼 가치가 있는 프로젝트를 최대 3개 선정하세요. 가치가 없으면 더 적게 골라도 됩니다. 반드시 지정된 JSON 형식(selections 배열)으로만 답하세요.",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "당신은 AI 오픈소스 조사 담당자입니다.\n규칙:\n- 반드시 입력 목록에 있는 저장소 중에서만 최대 3개를 고르세요. 목록에 없는 프로젝트나 URL을 만들지 마세요.\n- name과 url은 입력 목록의 값을 그대로 복사하세요.\n- 선정 전 get_repository 도구로 메타데이터를, get_readme 도구로 README를 확인하세요.\n- evidence에는 도구로 확인한 근거(README 내용, 별점, 라이선스 등)를 적으세요.\n- 도구로 확인할 수 없는 정보는 추측하지 말고 \"미확인\"이라고 쓰세요.\n- 모든 설명은 한국어로 작성하세요.",
+          "maxIterations": 8
+        }
+      },
+      "id": "5cb364f7-ef35-4b85-a4bf-5ac2f72dc032",
+      "name": "조사 Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        880,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "gpt-6.1-terra"
+        },
+        "builtInTools": {},
+        "options": {
+          "maxRetries": 0
+        }
+      },
+      "id": "3e7fddd7-0c80-49a0-a621-0d53a1fcade8",
+      "name": "조사용 모델",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        752,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "GitHub 저장소의 실제 메타데이터(설명, 별점, 라이선스, 토픽, 최근 업데이트)를 조회합니다. full_name은 owner/repo 형식입니다.",
+        "url": "=https://api.github.com/repos/{{ $fromAI(\"full_name\", \"owner/repo 형식의 저장소 전체 이름\", \"string\") }}",
+        "options": {},
+        "optimizeResponse": true,
+        "fieldsToInclude": "selected",
+        "fields": "full_name,html_url,description,stargazers_count,license,topics,language,pushed_at,open_issues_count,archived"
+      },
+      "id": "fcfec980-490c-4acf-a720-123998c9e0bb",
+      "name": "get_repository",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.5,
+      "position": [
+        880,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "GitHub 저장소의 README 원문 일부를 가져옵니다. 설치 방법과 사용 예시를 확인할 때 사용합니다. full_name은 owner/repo 형식입니다.",
+        "url": "=https://api.github.com/repos/{{ $fromAI(\"full_name\", \"owner/repo 형식의 저장소 전체 이름\", \"string\") }}/readme",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.raw+json"
+            }
+          ]
+        },
+        "options": {},
+        "optimizeResponse": true,
+        "responseType": "text",
+        "truncateResponse": true,
+        "maxLength": 4000
+      },
+      "id": "1409a882-6103-4c3e-b330-a72f2b04401e",
+      "name": "get_readme",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.5,
+      "position": [
+        1008,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"selections\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"name\": {\n            \"type\": \"string\"\n          },\n          \"url\": {\n            \"type\": \"string\"\n          },\n          \"reason\": {\n            \"type\": \"string\"\n          },\n          \"how_to_try\": {\n            \"type\": \"string\"\n          },\n          \"evidence\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"name\",\n          \"url\"\n        ]\n      }\n    }\n  },\n  \"required\": [\n    \"selections\"\n  ]\n}"
+      },
+      "id": "0d09f015-d4ac-4eaf-8bfa-9fe18bf8aa96",
+      "name": "조사 결과 형식",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1136,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const out = $input.first().json.output || {};\nconst sel = Array.isArray(out.selections) ? out.selections : [];\nconst picked = sel.slice(0, 3).map(function (s) {\n  return {\n    name: String((s && s.name) || '').trim(),\n    url: (s && s.url) || '미확인',\n    reason: (s && s.reason) || '미확인',\n    how_to_try: (s && s.how_to_try) || '미확인',\n    evidence: (s && s.evidence) || '미확인'\n  };\n}).filter(function (p) { return p.name.length > 0; });\nif (picked.length === 0) {\n  throw new Error('조사 Agent가 추천한 저장소가 0개입니다. 검증과 보고서 생성을 중단합니다.');\n}\nreturn picked.map(function (p) { return { json: p }; });"
+      },
+      "id": "b2690f94-6036-4cdf-acb1-247478f04517",
+      "name": "추천 저장소 분리",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.github.com/repos/{{ $json.name }}/readme",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.raw+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "895551ab-a217-42c6-8fcd-3a20e4d0e59d",
+      "name": "get_readme (추천 저장소 README 조회)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1504,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const sel = $('추천 저장소 분리').all();\nconst res = $input.all();\nconst readmes = [];\nfor (let i = 0; i < sel.length; i++) {\n  const s = sel[i].json;\n  const j = (res[i] && res[i].json) || {};\n  const code = typeof j.statusCode === 'number' ? j.statusCode : null;\n  const text = typeof j.body === 'string' ? j.body : (typeof j.data === 'string' ? j.data : '');\n  const notFound = code === 404 || (text.indexOf('\"message\"') !== -1 && text.indexOf('Not Found') !== -1);\n  const ok = !notFound && (code === null || (code >= 200 && code < 300)) && text.trim().length > 0;\n  readmes.push({\n    name: s.name,\n    url: s.url,\n    readme_status: ok ? 'found' : 'missing',\n    http_status: code === null ? '미확인' : code,\n    readme_excerpt: ok ? text.slice(0, 6000) : ''\n  });\n}\nreturn [{ json: {\n  readmes: readmes,\n  readmes_text: JSON.stringify(readmes, null, 2),\n  selections_text: JSON.stringify(sel.map(function (x) { return x.json; }), null, 2)\n} }];"
+      },
+      "id": "61b7ad04-86f9-430d-8a98-306ff20e814e",
+      "name": "README 결과 모음",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=[원본 GitHub 검색 데이터]\n{{ $(\"저장소 정보 정리\").first().json.repos_text }}\n\n[조사 Agent 추천 결과 (최대 3개)]\n{{ $json.selections_text }}\n\n[README 조회 결과 (get_readme)]\n{{ $json.readmes_text }}\n\n추천 결과의 모든 주장을 원본 데이터와 README로 대조하세요. 반드시 지정된 JSON 형식(projects, issues, judgement_basis)으로만 답하세요.",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "당신은 사실 검증 담당자입니다. 최종 PASS/REVIEW/FAIL 판정은 하지 마세요. 판정은 다음 단계의 규칙이 합니다.\n절차:\n1. 추천 저장소마다 check_repository 도구로 실제 존재 여부를 확인하고 repo_exists에 true/false를 적으세요. 조회에 실패하면 false입니다.\n2. reported_stars와 reported_license에는 조사 결과(evidence 등)에 적힌 값을 고치지 말고 그대로 옮기세요. 조사 결과에 언급이 없으면 \"미확인\"이라고 쓰세요.\n3. readme_status에는 README 조회 결과의 값(found 또는 missing)을 그대로 쓰세요.\n4. 조사 결과의 각 주장(추천 이유, 사용 방법, 근거)을 원본 메타데이터와 README 발췌에 대조하세요. 근거가 있으면 confirmed_claims에, 근거를 찾지 못하면 unverified_claims에 넣으세요. README가 missing이면 README에 기대는 주장은 모두 unverified_claims입니다.\n5. 이름, URL, 별점, 라이선스, 존재 여부처럼 원본과 명백히 다른 핵심 사실은 mismatches에 구체적으로 적으세요. 없으면 빈 배열입니다.\n6. reason, how_to_try, evidence는 확인된 내용만으로 다시 쓰고, 확인되지 않은 부분은 \"미확인\"이라고 쓰세요.\n7. 그 밖의 문제(형식 오류, 원본에 없는 저장소 등)는 issues에 적으세요. 없으면 빈 배열입니다.\n8. judgement_basis에는 무엇을 무엇과 대조했는지 한두 문장으로 쓰세요.\n- 모든 텍스트는 한국어로 작성하세요.",
+          "maxIterations": 8
+        }
+      },
+      "id": "dbf043f8-9d21-4898-b604-7965e24d433a",
+      "name": "검증 Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        2016,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "gpt-6.1-terra"
+        },
+        "builtInTools": {},
+        "options": {
+          "maxRetries": 0
+        }
+      },
+      "id": "2489e4ab-19e8-439c-b35c-f3a24e93c0d9",
+      "name": "검증용 모델",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        1952,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "GitHub 저장소가 실제로 존재하는지와 원본 메타데이터를 다시 조회합니다. full_name은 owner/repo 형식입니다. 존재하지 않으면 404 오류가 반환됩니다.",
+        "url": "=https://api.github.com/repos/{{ $fromAI(\"full_name\", \"owner/repo 형식의 저장소 전체 이름\", \"string\") }}",
+        "options": {},
+        "optimizeResponse": true,
+        "fieldsToInclude": "selected",
+        "fields": "full_name,html_url,description,stargazers_count,license,topics,language,pushed_at,archived"
+      },
+      "id": "70c78810-cf39-4ac3-83ad-83c980cdea83",
+      "name": "check_repository",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.5,
+      "position": [
+        2080,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"projects\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"name\": { \"type\": \"string\" },\n          \"url\": { \"type\": \"string\" },\n          \"repo_exists\": { \"type\": \"boolean\" },\n          \"reported_stars\": { \"type\": \"string\" },\n          \"reported_license\": { \"type\": \"string\" },\n          \"readme_status\": { \"type\": \"string\" },\n          \"confirmed_claims\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n          \"unverified_claims\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n          \"mismatches\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n          \"reason\": { \"type\": \"string\" },\n          \"how_to_try\": { \"type\": \"string\" },\n          \"evidence\": { \"type\": \"string\" }\n        },\n        \"required\": [\"name\", \"url\", \"repo_exists\", \"unverified_claims\", \"mismatches\"]\n      }\n    },\n    \"issues\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n    \"judgement_basis\": { \"type\": \"string\" }\n  },\n  \"required\": [\"projects\", \"issues\", \"judgement_basis\"]\n}"
+      },
+      "id": "a6386361-f320-4fc2-8daa-4b0dbbde6f8e",
+      "name": "검증 결과 형식",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        2208,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// DECIDE_START\nfunction decide(raw, originalRepos, readmeResults) {\n  function list(a) { return Array.isArray(a) ? a.filter(function (s) { return typeof s === 'string' && s.trim().length > 0; }) : []; }\n  function given(x) { return x !== undefined && x !== null && String(x).trim() !== '' && String(x).trim() !== '미확인'; }\n  // 별점 정규화: 정수, \"7\", \"7개\", \"1,234개\"만 허용. 변환할 수 없으면 null (추정하지 않음)\n  function parseStars(x) {\n    if (typeof x === 'number') return Number.isSafeInteger(x) && x >= 0 ? x : null;\n    if (typeof x !== 'string') return null;\n    let s = x.trim();\n    if (s.slice(-1) === '개') s = s.slice(0, -1).trim();\n    if (s.length === 0) return null;\n    const groups = s.split(',');\n    for (let i = 0; i < groups.length; i++) {\n      const g = groups[i];\n      if (g.length === 0) return null;\n      for (const ch of g) { if (ch < '0' || ch > '9') return null; }\n      if (groups.length > 1 && (i === 0 ? g.length > 3 : g.length !== 3)) return null;\n    }\n    const n = Number(groups.join(''));\n    return Number.isSafeInteger(n) ? n : null;\n  }\n  const fail = [];\n  const review = [];\n  let v = raw;\n  if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { v = null; } }\n  if (v && typeof v === 'object' && !Array.isArray(v.projects) && v.output !== undefined) {\n    v = v.output;\n    if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { v = null; } }\n  }\n  if (!v || typeof v !== 'object' || !Array.isArray(v.projects)) {\n    return { status: 'FAIL', fail_reasons: ['검증 결과 JSON을 해석하지 못했습니다. 파싱 실패는 PASS로 처리하지 않습니다.'], review_reasons: [], issues: [], unverified_claims: [], projects: [], judgement_basis: '미확인' };\n  }\n  const issues = list(v.issues);\n  if (!Array.isArray(v.issues)) review.push('issues 필드가 배열이 아닙니다.');\n  const judgement = typeof v.judgement_basis === 'string' && v.judgement_basis.trim() ? v.judgement_basis : '미확인';\n  if (judgement === '미확인') review.push('판정 근거(judgement_basis)가 없습니다.');\n  const byName = {};\n  (originalRepos || []).forEach(function (r) { byName[String(r.name).toLowerCase()] = r; });\n  const readmeBy = {};\n  (readmeResults || []).forEach(function (r) { readmeBy[String(r.name).toLowerCase()] = r; });\n  if (v.projects.length === 0) fail.push('검증된 추천 저장소가 0개입니다.');\n  const allUnverified = [];\n  const projects = [];\n  v.projects.forEach(function (p) {\n    p = p || {};\n    const name = String(p.name || '').trim() || '(이름 없음)';\n    const key = name.toLowerCase();\n    const orig = byName[key];\n    const unv = list(p.unverified_claims);\n    const mism = list(p.mismatches);\n    if (!orig) {\n      fail.push(name + ': 원본 검색 결과에 없는 저장소입니다.');\n    } else {\n      if (String(p.url || '') !== String(orig.url)) fail.push(name + ': URL 불일치 (보고 ' + (p.url || '없음') + ', 원본 ' + orig.url + ')');\n      if (p.repo_exists !== true) fail.push(name + ': 저장소가 없거나 존재를 확인하지 못했습니다.');\n      const rs = parseStars(p.reported_stars);\n      const apiStars = typeof orig.stars === 'number' && Number.isSafeInteger(orig.stars) ? orig.stars : null;\n      if (apiStars === null) {\n        fail.push(name + ': GitHub API stargazers_count를 확인할 수 없습니다.');\n      } else if (rs === null) {\n        fail.push(name + ': 별점 값을 정수로 정확히 변환할 수 없습니다 (보고 ' + JSON.stringify(p.reported_stars === undefined ? null : p.reported_stars) + ', 원본 ' + apiStars + ')');\n      } else if (rs !== apiStars) {\n        fail.push(name + ': 별점 불일치 (보고 ' + rs + ', 원본 ' + apiStars + ')');\n      }\n      if (given(p.reported_license) && orig.license !== '미확인' && String(p.reported_license).trim().toUpperCase() !== String(orig.license).toUpperCase()) {\n        fail.push(name + ': 라이선스 불일치 (보고 ' + p.reported_license + ', 원본 ' + orig.license + ')');\n      }\n      if (orig.stars === '미확인' || orig.license === '미확인') review.push(name + ': 원본의 별점 또는 라이선스가 미확인입니다.');\n    }\n    mism.forEach(function (m) { fail.push(name + ': ' + m); });\n    const rd = readmeBy[key];\n    const readmeStatus = rd ? rd.readme_status : (p.readme_status || '미확인');\n    if (readmeStatus !== 'found') review.push(name + ': README를 확인하지 못했습니다.');\n    unv.forEach(function (u) { allUnverified.push(name + ': ' + u); });\n    projects.push({\n      name: name,\n      url: orig ? orig.url : (p.url || '미확인'),\n      stars: orig ? orig.stars : '미확인',\n      license: orig ? orig.license : '미확인',\n      description: orig ? orig.description : '미확인',\n      readme_status: readmeStatus,\n      confirmed_claims: list(p.confirmed_claims),\n      unverified_claims: unv,\n      mismatches: mism,\n      reason: p.reason || '미확인',\n      how_to_try: p.how_to_try || '미확인',\n      evidence: p.evidence || '미확인'\n    });\n  });\n  if (allUnverified.length > 0) review.push('미확인 주장 ' + allUnverified.length + '건');\n  if (issues.length > 0) review.push('검증 이슈 ' + issues.length + '건');\n  const status = fail.length > 0 ? 'FAIL' : (review.length > 0 ? 'REVIEW' : 'PASS');\n  return { status: status, fail_reasons: fail, review_reasons: review, issues: issues, unverified_claims: allUnverified, projects: projects, judgement_basis: judgement };\n}\n// DECIDE_END\nconst first = $input.first().json;\nconst raw = first.output !== undefined ? first.output : first;\nconst original = $('저장소 정보 정리').first().json.repos || [];\nconst readmes = $('README 결과 모음').first().json.readmes || [];\nreturn [{ json: decide(raw, original, readmes) }];"
+      },
+      "id": "57a9dfc3-4ca6-4043-99a0-1511236deb67",
+      "name": "최종 판정",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2416,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "FAIL",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fef751d4-82db-4584-a783-43e90a3b206c",
+      "name": "판정이 FAIL인가?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2640,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "errorMessage": "=검증 FAIL로 보고서를 만들지 않고 중단합니다. 원인: {{ ($json.fail_reasons || []).join(\" / \") }}"
+      },
+      "id": "63beb845-e47b-476f-a44f-0b05d88a3e1b",
+      "name": "검증 FAIL 기록 후 중단",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1920,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=[최종 판정] {{ $json.status }}\n[REVIEW 사유]\n{{ ($json.review_reasons || []).join(\"\\n\") || \"해당 없음\" }}\n[검증 이슈]\n{{ ($json.issues || []).join(\"\\n\") || \"해당 없음\" }}\n[미확인 주장]\n{{ ($json.unverified_claims || []).join(\"\\n\") || \"해당 없음\" }}\n[판정 근거]\n{{ $json.judgement_basis }}\n\n[검증된 추천 프로젝트]\n{{ JSON.stringify($json.projects, null, 2) }}\n\n[수집된 전체 목록 (원본 {{ $(\"저장소 정보 정리\").first().json.repo_count }}개)]\n{{ $(\"저장소 정보 정리\").first().json.repos_text }}\n\n작성일: {{ $now.toFormat(\"yyyy-MM-dd\") }}\n위 데이터로 한국어 Markdown 보고서를 작성하세요.",
+        "options": {
+          "systemMessage": "당신은 AI 트렌드 보고서 작성자입니다.\n- 한국어 Markdown으로만 작성하고, 보고서 본문만 출력하세요.\n- 구성: # 제목, ## 요약, ## 추천 프로젝트(프로젝트별 이름, URL, 별점, 라이선스, README 확인 여부, 추천 이유, 사용해보는 방법, 근거), ## 수집된 저장소 표(이름|URL|별점|라이선스|설명), ## 미확인 항목, ## 조사 방법.\n- \"검증 상태\" 섹션은 쓰지 마세요. 다음 단계가 실제 판정으로 자동 삽입합니다.\n- 입력 데이터에 있는 프로젝트명, URL, 수치만 사용하세요. 새 프로젝트, 링크, 수치를 만들지 마세요.\n- 근거가 없는 내용은 \"미확인\"이라고 쓰세요. 미확인 주장은 하나도 빠짐없이 ## 미확인 항목에 적으세요.\n- 최종 판정이 REVIEW이면 미확인 주장마다 \"(REVIEW)\"를 붙이고, \"검증 이슈 없음\", \"문제 없음\", \"모두 확인됨\", \"PASS\" 같은 표현을 절대 쓰지 마세요.\n- 작성 전에 think 도구로 모든 문장이 입력 데이터에 근거하는지 점검하세요."
+        }
+      },
+      "id": "19cda893-bf7f-48ca-8a1c-00cc8f2ad202",
+      "name": "보고 Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        2640,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "gpt-6.1-terra"
+        },
+        "builtInTools": {},
+        "options": {
+          "maxRetries": 0
+        }
+      },
+      "id": "b356ecda-8108-4e0a-af98-7f59d4193109",
+      "name": "보고용 모델",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        2656,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "description": "보고서 구조를 정리하고, 모든 문장이 검증 데이터에 근거하는지 스스로 점검할 때 사용합니다."
+      },
+      "id": "a8a30f4c-7f0f-40d2-9493-d16bfaddb0db",
+      "name": "think",
+      "type": "@n8n/n8n-nodes-langchain.toolThink",
+      "typeVersion": 1.1,
+      "position": [
+        2784,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('최종 판정').first().json;\nconst body = String($input.first().json.output || '');\nconst banned = ['검증 이슈 없음', '이슈 없음', '문제 없음', '모두 검증', '모두 확인', '검증 완료', 'PASS'];\nlet removed = 0;\nlet lines = body.split('\\n');\nif (d.status !== 'PASS') {\n  lines = lines.filter(function (line) {\n    const hit = banned.some(function (b) { return line.indexOf(b) !== -1; });\n    if (hit) removed++;\n    return !hit;\n  });\n}\nconst st = ['## 검증 상태'];\nif (d.status === 'PASS') {\n  st.push('**PASS**: 추천 저장소의 핵심 사실과 주장이 GitHub 원본 데이터와 README로 모두 확인되었습니다. 검증 이슈 없음.');\n} else {\n  st.push('**상태: REVIEW** (사람 확인 필요)');\n  st.push('');\n  st.push('판정 사유:');\n  (d.review_reasons || []).forEach(function (r) { st.push('- ' + r); });\n  if ((d.issues || []).length > 0) { st.push(''); st.push('검증 이슈:'); d.issues.forEach(function (r) { st.push('- ' + r); }); }\n  if ((d.unverified_claims || []).length > 0) { st.push(''); st.push('미확인 주장:'); d.unverified_claims.forEach(function (r) { st.push('- ' + r + ' (REVIEW)'); }); }\n}\nst.push('');\nst.push('판정 근거: ' + d.judgement_basis);\nst.push('');\nlet idx = lines.findIndex(function (l) { return l.indexOf('# ') === 0; });\nif (idx === -1) { lines.unshift('# AI 트렌드 저장소 보고서'); idx = 0; }\nlines.splice(idx + 1, 0, '', ...st);\nreturn [{ json: { status: d.status, report_markdown: lines.join('\\n'), removed_contradictory_lines: removed } }];"
+      },
+      "id": "7aea28a4-f647-4cf6-9df6-582c0f07043e",
+      "name": "보고서 판정 문구 정리",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        352
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "실행 버튼": {
+      "main": [
+        [
+          {
+            "node": "GitHub AI 저장소 검색",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GitHub AI 저장소 검색": {
+      "main": [
+        [
+          {
+            "node": "저장소 정보 정리",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "저장소 정보 정리": {
+      "main": [
+        [
+          {
+            "node": "조사 Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "조사 Agent": {
+      "main": [
+        [
+          {
+            "node": "추천 저장소 분리",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "조사용 모델": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "조사 Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_repository": {
+      "ai_tool": [
+        [
+          {
+            "node": "조사 Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_readme": {
+      "ai_tool": [
+        [
+          {
+            "node": "조사 Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "조사 결과 형식": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "조사 Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "추천 저장소 분리": {
+      "main": [
+        [
+          {
+            "node": "get_readme (추천 저장소 README 조회)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_readme (추천 저장소 README 조회)": {
+      "main": [
+        [
+          {
+            "node": "README 결과 모음",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "README 결과 모음": {
+      "main": [
+        [
+          {
+            "node": "검증 Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "검증 Agent": {
+      "main": [
+        [
+          {
+            "node": "최종 판정",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "검증용 모델": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "검증 Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "check_repository": {
+      "ai_tool": [
+        [
+          {
+            "node": "검증 Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "검증 결과 형식": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "검증 Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "최종 판정": {
+      "main": [
+        [
+          {
+            "node": "판정이 FAIL인가?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "판정이 FAIL인가?": {
+      "main": [
+        [
+          {
+            "node": "검증 FAIL 기록 후 중단",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "보고 Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "보고 Agent": {
+      "main": [
+        [
+          {
+            "node": "보고서 판정 문구 정리",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "보고용 모델": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "보고 Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "think": {
+      "ai_tool": [
+        [
+          {
+            "node": "보고 Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "nodeGroups": [
+    {
+      "id": "578b6615-ec3b-4c4d-ac71-aa3328522d76",
+      "name": "AI 저장소 수집",
+      "nodeIds": [
+        "6b403719-2da8-427c-8e38-0caddb7dcfb3",
+        "faed0b0a-d62a-477c-a15e-79aa3f836891"
+      ],
+      "description": "최근 7일간 생성된 AI 저장소를 별점순 최대 5개 가져와 이름, URL, 설명, 별점, 라이선스로 정리"
+    },
+    {
+      "id": "c5984a4a-416c-4110-b738-6d918de0897f",
+      "name": "사용해볼 프로젝트 선정",
+      "nodeIds": [
+        "5cb364f7-ef35-4b85-a4bf-5ac2f72dc032",
+        "3e7fddd7-0c80-49a0-a621-0d53a1fcade8",
+        "fcfec980-490c-4acf-a720-123998c9e0bb",
+        "1409a882-6103-4c3e-b330-a72f2b04401e",
+        "0d09f015-d4ac-4eaf-8bfa-9fe18bf8aa96"
+      ],
+      "description": "수집한 저장소 중 써볼 가치가 있는 최대 3개를 README와 메타데이터를 근거로 고름"
+    },
+    {
+      "id": "f7a43abb-9135-4d6c-b54b-7eb535ddab56",
+      "name": "근거 검증과 판정",
+      "nodeIds": [
+        "b2690f94-6036-4cdf-acb1-247478f04517",
+        "895551ab-a217-42c6-8fcd-3a20e4d0e59d",
+        "61b7ad04-86f9-430d-8a98-306ff20e814e",
+        "dbf043f8-9d21-4898-b604-7965e24d433a",
+        "2489e4ab-19e8-439c-b35c-f3a24e93c0d9",
+        "70c78810-cf39-4ac3-83ad-83c980cdea83",
+        "a6386361-f320-4fc2-8daa-4b0dbbde6f8e",
+        "57a9dfc3-4ca6-4043-99a0-1511236deb67",
+        "fef751d4-82db-4584-a783-43e90a3b206c"
+      ],
+      "description": "추천 최대 3개의 README를 받아 원본과 대조하고, 규칙으로 PASS·REVIEW·FAIL을 정해 FAIL이면 멈춤"
+    },
+    {
+      "id": "892b541a-da17-4657-b0cd-ea53632caf2b",
+      "name": "한국어 보고서 작성",
+      "nodeIds": [
+        "19cda893-bf7f-48ca-8a1c-00cc8f2ad202",
+        "b356ecda-8108-4e0a-af98-7f59d4193109",
+        "a8a30f4c-7f0f-40d2-9493-d16bfaddb0db",
+        "7aea28a4-f647-4cf6-9df6-582c0f07043e"
+      ],
+      "description": "PASS·REVIEW 판정일 때만 Markdown 보고서를 만들고, 실제 판정과 모순되는 문구를 걸러냄"
+    }
+  ],
+  "tags": []
+}
