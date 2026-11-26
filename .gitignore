@@ -1,0 +1,9 @@
+# API credentials and local execution data
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+node_modules/
+.DS_Store
